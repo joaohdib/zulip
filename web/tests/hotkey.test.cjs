@@ -582,6 +582,10 @@ test_while_not_editing_text("narrow next unread followed topic", () => {
     assert_mapping("N", message_view, "narrow_to_next_topic", true);
 });
 
+run_test("recent view mock defaults", () => {
+    assert.equal(recent_view_ui.change_focused_element(), false);
+});
+
 run_test(
     "recent view navigation hotkeys only route for recent targets",
     ({override, override_rewire}) => {
