@@ -405,8 +405,21 @@ export function rewire_processing_text(value: typeof processing_text): void {
     processing_text = value;
 }
 
-function should_route_hotkey_to_recent_view($target: JQuery): boolean {
+function should_route_hotkey_to_recent_view($target: JQuery<object>): boolean {
     return $target.is("body") || $target.closest("#recent_view").length > 0;
+}
+
+type RecentViewTargetLike = {
+    to_$: () => JQuery;
+};
+
+function is_recent_view_target_like(target: unknown): target is RecentViewTargetLike {
+    return (
+        typeof target === "object" &&
+        target !== null &&
+        "to_$" in target &&
+        typeof target.to_$ === "function"
+    );
 }
 
 function get_recent_view_hotkey_target(target: unknown): JQuery | undefined {
@@ -414,7 +427,16 @@ function get_recent_view_hotkey_target(target: unknown): JQuery | undefined {
         return undefined;
     }
 
-    const $target = $(target);
+    let $target: JQuery;
+
+    if (typeof HTMLElement !== "undefined" && target instanceof HTMLElement) {
+        $target = $(target);
+    } else if (is_recent_view_target_like(target)) {
+        $target = target.to_$();
+    } else {
+        return undefined;
+    }
+
     if (!should_route_hotkey_to_recent_view($target)) {
         return undefined;
     }
