@@ -30,21 +30,16 @@ list. For example, to add a new incoming webhook integration, declare a
 IncomingWebhookIntegration in the INCOMING_WEBHOOK_INTEGRATIONS list. All
 *_INTEGRATIONS lists are automatically aggregated into the INTEGRATIONS dict.
 
-To add a new integration category, add to either the CATEGORIES or
-META_CATEGORY dicts below. The META_CATEGORY dict is for categories
-that do not describe types of tools (e.g., bots or frameworks).
+To add a new integration category, add it to the CATEGORIES dict below.
 
 Over time, we expect this registry to grow additional convenience
 features for writing and configuring integrations efficiently.
 """
 
-META_CATEGORY: dict[str, StrPromise] = {
-    "meta-integration": gettext_lazy("Integration frameworks"),
-    "bots": gettext_lazy("Interactive bots"),
-}
 
 CATEGORIES: dict[str, StrPromise] = {
-    **META_CATEGORY,
+    "meta-integration": gettext_lazy("Integration frameworks"),
+    "bots": gettext_lazy("Interactive bots"),
     "video-calling": gettext_lazy("Video calling"),
     "continuous-integration": gettext_lazy("Continuous integration"),
     "customer-support": gettext_lazy("Customer support"),
@@ -599,9 +594,9 @@ INCOMING_WEBHOOK_INTEGRATIONS: list[IncomingWebhookIntegration] = [
         "dbt",
         ["deployment"],
         [WebhookScreenshotConfig("job_run_completed_errored.json")],
-        display_name="DBT",
+        display_name="dbt",
         url_options=[
-            WebhookUrlOption(name="access_url", label="DBT Access URL", input_type="text")
+            WebhookUrlOption(name="access_url", label="dbt Access URL", input_type="text")
         ],
     ),
     IncomingWebhookIntegration(
@@ -672,6 +667,11 @@ INCOMING_WEBHOOK_INTEGRATIONS: list[IncomingWebhookIntegration] = [
                 name="include_repository_name",
                 label="Include repository name in the notifications",
                 input_type="checkbox",
+            ),
+            WebhookUrlOption(
+                name="include_emoji_indicators",
+                label="Include emoji indicators in the notifications",
+                input_type="checkbox_enabled",
             ),
         ],
     ),
@@ -992,7 +992,10 @@ VIDEO_CALL_INTEGRATIONS: list[Integration] = [
     ),
     Integration("jitsi", ["video-calling", "communication"], display_name="Jitsi Meet"),
     Integration(
-        "nextcloud-talk", ["video-calling", "communication"], display_name="Nextcloud Talk"
+        "nextcloud-talk",
+        ["video-calling", "communication"],
+        display_name="Nextcloud Talk",
+        logo="images/integrations/logos/nextcloud.svg",
     ),
     Integration("webex", ["video-calling", "communication"]),
     Integration("zoom", ["video-calling", "communication"]),

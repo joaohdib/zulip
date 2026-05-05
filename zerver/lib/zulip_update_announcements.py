@@ -589,6 +589,55 @@ users who haven't personally configured it.
             configure_default_new_user_settings_url="/help/configure-default-new-user-settings",
         ),
     ),
+    ZulipUpdateAnnouncement(
+        level=25,
+        message="""
+**Web and desktop updates**
+- You can now instantly [scroll to any date]({scroll_to_date_url}) in the
+message feed, whether you're viewing a conversation, a channel feed, search
+results, or anything else.
+- You can now [quote or forward]({quote_or_forward_url}) selected text from
+several messages at once using the `>` and `<` keyboard shortcuts.
+""".format(
+            scroll_to_date_url="/help/scroll-to-date",
+            quote_or_forward_url="/help/quote-or-forward-a-message",
+        ),
+    ),
+    ZulipUpdateAnnouncement(
+        level=26,
+        message="""
+Zulip now [encrypts]({mobile_notifications_e2ee_url}) your push notifications
+end to end from the Zulip server to your mobile device when you use version
+30.0.272+ of the mobile app.
+
+**Web and desktop updates**
+- You can now [search]({search_your_important_messages_url}) for messages that
+mention any user with the `mentions:` filter.
+
+""".format(
+            mobile_notifications_e2ee_url="/help/mobile-notifications#end-to-end-encryption-e2ee-for-mobile-push-notifications",
+            search_your_important_messages_url="/help/search-for-messages#search-your-important-messages",
+        ),
+    ),
+    ZulipUpdateAnnouncement(
+        level=27,
+        message=(
+            """
+We make many improvements to Zulip beyond what we can share here. Learn about
+additional feature highlights, and other Zulip project updates since last
+August, in the [blog post]({blog_post_12_0_url}) announcing today's release of
+Zulip Server 12.0.
+"""
+            if settings.CORPORATE_ENABLED
+            else """
+We make many improvements to Zulip beyond what we can share here. Check out our
+[release announcement blog post]({blog_post_12_0_url}) to learn about additional
+feature highlights in Zulip Server 12.0, and other Zulip project updates.
+"""
+        ).format(
+            blog_post_12_0_url="https://blog.zulip.com/zulip-server-12-0",
+        ),
+    ),
 ]
 
 

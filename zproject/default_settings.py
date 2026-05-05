@@ -100,6 +100,7 @@ SOCIAL_AUTH_SAML_SECURITY_CONFIG: dict[str, Any] = {}
 # Set this to True to enforce that any configured IdP needs to specify
 # the limit_to_subdomains setting to be considered valid:
 SAML_REQUIRE_LIMIT_TO_SUBDOMAINS = False
+OIDC_REQUIRE_LIMIT_TO_SUBDOMAINS = False
 
 # Historical name for SOCIAL_AUTH_GITHUB_KEY; still allowed in production.
 GOOGLE_OAUTH2_CLIENT_ID: str | None = None
@@ -116,7 +117,9 @@ SOCIAL_AUTH_APPLE_EMAIL_AS_USERNAME = True
 SOCIAL_AUTH_OIDC_ENABLED_IDPS: dict[str, OIDCIdPConfigDict] = {}
 SOCIAL_AUTH_OIDC_FULL_NAME_VALIDATED = False
 
-SOCIAL_AUTH_SYNC_ATTRS_DICT: dict[str, dict[str, dict[str, str | list[str | tuple[str, str]]]]] = {}
+SOCIAL_AUTH_SYNC_ATTRS_DICT: dict[
+    str, dict[str, dict[str, str | bool | list[str | tuple[str, str]]]]
+] = {}
 
 # Other auth
 SSO_APPEND_DOMAIN: str | None = None

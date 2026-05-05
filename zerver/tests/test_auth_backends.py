@@ -1,6 +1,7 @@
 import base64
 import copy
 import json
+import logging
 import os
 import re
 import secrets
@@ -3448,6 +3449,63 @@ class SAMLAuthBackendTest(SocialAuthBase):
         ).value
         self.assertEqual(phone_field_value, expected_value)
 
+    def test_social_auth_full_name_sync(self) -> None:
+        sync_attrs_dict = {"zulip": {"saml": {"full_name": True}}}
+        new_name = "Updated Name"
+
+        with self.settings(SOCIAL_AUTH_SYNC_ATTRS_DICT=sync_attrs_dict):
+            account_data_dict = self.get_account_data_dict(email=self.email, name=new_name)
+            with self.assertLogs(self.logger_string, level="INFO"):
+                result = self.social_auth_test(
+                    account_data_dict,
+                    subdomain="zulip",
+                )
+        data = load_subdomain_token(result)
+        self.assertEqual(data["email"], self.email)
+        self.assertEqual(result.status_code, 302)
+        self.user_profile.refresh_from_db()
+        self.assertEqual(self.user_profile.full_name, new_name)
+
+        # Without full_name sync configured, the name should not be updated.
+        with self.settings(SOCIAL_AUTH_SYNC_ATTRS_DICT={}):
+            account_data_dict = self.get_account_data_dict(email=self.email, name="Another Name")
+            result = self.social_auth_test(
+                account_data_dict,
+                subdomain="zulip",
+            )
+        data = load_subdomain_token(result)
+        self.assertEqual(data["email"], self.email)
+        self.assertEqual(result.status_code, 302)
+        self.user_profile.refresh_from_db()
+        self.assertEqual(self.user_profile.full_name, new_name)
+
+        # Name with invalid characters should be rejected with a warning.
+        with (
+            self.settings(SOCIAL_AUTH_SYNC_ATTRS_DICT=sync_attrs_dict),
+            self.assertLogs(self.logger_string, level="WARNING") as m,
+        ):
+            account_data_dict = self.get_account_data_dict(email=self.email, name="Invalid* Name")
+            result = self.social_auth_test(
+                account_data_dict,
+                subdomain="zulip",
+            )
+        # Logging in succeeds.
+        data = load_subdomain_token(result)
+        self.assertEqual(data["email"], self.email)
+        self.assertEqual(result.status_code, 302)
+        self.user_profile.refresh_from_db()
+        # The name doesn't get synced however, and we log a warning.
+        self.assertEqual(self.user_profile.full_name, new_name)
+        self.assertEqual(
+            m.output,
+            [
+                self.logger_output(
+                    f"Failed to sync full_name for user {self.user_profile.id}: Invalid characters in name!",
+                    type="warning",
+                )
+            ],
+        )
+
     def test_social_auth_group_sync(self) -> None:
         realm = get_realm("zulip")
         hamlet = self.example_user("hamlet")
@@ -4182,6 +4240,53 @@ class SAMLAuthBackendTest(SocialAuthBase):
         self.assertEqual(hamlet.delivery_email, self.email)
         self.assertTrue(
             any("Can't sync email" in output for output in m.output),
+        )
+
+    def test_external_auth_id_saml_cross_realm_bot_email(self) -> None:
+        """Test that email is NOT synced when the target email is reserved
+        for a cross-realm system bot."""
+        hamlet = self.example_user("hamlet")
+
+        idps_config_dict = copy.deepcopy(settings.SOCIAL_AUTH_SAML_ENABLED_IDPS)
+        idps_config_dict["test_idp"]["attr_user_permanent_id"] = "uid"
+        uid_value = "testuid"
+
+        # Create ExternalAuthID for hamlet.
+        account_data_dict = self.get_account_data_dict(email=self.email, name=self.name)
+        with (
+            self.settings(SOCIAL_AUTH_SAML_ENABLED_IDPS=idps_config_dict),
+            self.assertLogs(self.logger_string, level="INFO"),
+        ):
+            result = self.social_auth_test(
+                account_data_dict,
+                subdomain="zulip",
+                extra_attributes={"uid": [uid_value]},
+            )
+        self.assertEqual(result.status_code, 302)
+
+        # Try to login with a cross-realm bot email - should find hamlet by
+        # ExternalAuthID but refuse to sync the email onto a reserved address.
+        bot_email = "notification-bot@zulip.com"
+        assert bot_email in settings.CROSS_REALM_BOT_EMAILS
+        bot_data = self.get_account_data_dict(email=bot_email, name=self.name)
+        with (
+            self.settings(SOCIAL_AUTH_SAML_ENABLED_IDPS=idps_config_dict),
+            self.assertLogs(self.logger_string, level="INFO") as m,
+        ):
+            result = self.social_auth_test(
+                bot_data,
+                subdomain="zulip",
+                extra_attributes={"uid": [uid_value]},
+            )
+        self.assertEqual(result.status_code, 302)
+        data = load_subdomain_token(result)
+        self.assertEqual(data["email"], hamlet.delivery_email)
+
+        hamlet.refresh_from_db()
+        # Email should NOT have changed.
+        self.assertEqual(hamlet.delivery_email, self.email)
+        self.assertTrue(
+            any("reserved for system bots" in output for output in m.output),
         )
 
     def test_external_auth_id_saml_deactivated_user(self) -> None:
@@ -4948,6 +5053,34 @@ class GenericOpenIdConnectTest(SocialAuthBase):
         self.assert_json_error(result, "Missing idp param")
         self.assertEqual(
             m.output, [self.logger_output("/login/oidc/: Missing idp param.", type="info")]
+        )
+
+    def test_social_auth_oidc_require_limit_to_subdomains(self) -> None:
+        idps_dict = copy.deepcopy(settings.SOCIAL_AUTH_OIDC_ENABLED_IDPS)
+        idps_dict["testoidc2"] = copy.deepcopy(idps_dict["testoidc"])
+        idps_dict["testoidc2"]["oidc_url"] = "https://example.com/idp2/api/openid"
+        idps_dict["testoidc2"]["display_name"] = "Second Test IdP"
+        idps_dict["testoidc2"]["limit_to_subdomains"] = ["zulip"]
+
+        with self.settings(
+            SOCIAL_AUTH_OIDC_ENABLED_IDPS=idps_dict, OIDC_REQUIRE_LIMIT_TO_SUBDOMAINS=True
+        ):
+            with self.assertLogs(self.logger_string, level="ERROR") as m:
+                # Initialization of the backend should validate the configured IdPs
+                # with respect to the OIDC_REQUIRE_LIMIT_TO_SUBDOMAINS setting and remove
+                # the non-compliant ones.
+                GenericOpenIdConnectBackend()
+            self.assertEqual(list(settings.SOCIAL_AUTH_OIDC_ENABLED_IDPS.keys()), ["testoidc2"])
+        self.assertEqual(
+            m.output,
+            [
+                self.logger_output(
+                    "OIDC_REQUIRE_LIMIT_TO_SUBDOMAINS is enabled and the following "
+                    "IdPs don't have limit_to_subdomains specified and will be ignored: "
+                    "['testoidc']",
+                    "error",
+                )
+            ],
         )
 
     def test_social_auth_oidc_idp_limited_to_subdomains_attempt_wrong_realm(self) -> None:
@@ -7570,7 +7703,7 @@ class TestLDAP(ZulipLDAPTestCase):
         self.assertEqual(user_profile.delivery_email, "new-hamlet-email@zulip.com")
         self.assertEqual(ExternalAuthID.objects.filter(user=hamlet).count(), 1)
         self.assertIn(
-            f"INFO:zulip.auth.ldap:User {hamlet.id}, logged in via ExternalAuthId uid=hamlet,ou=users,dc=zulip,dc=com, has mismatched email. Syncing: hamlet@zulip.com => new-hamlet-email@zulip.com",
+            f"INFO:zulip.auth.ldap:User {hamlet.id}, being synced via ExternalAuthId uid=hamlet,ou=users,dc=zulip,dc=com, has mismatched email. Syncing: hamlet@zulip.com => new-hamlet-email@zulip.com",
             mock_log.output,
         )
 
@@ -7613,7 +7746,7 @@ class TestLDAP(ZulipLDAPTestCase):
         self.assertEqual(user_profile.delivery_email, "New-Hamlet-email@zulip.com")
         self.assertEqual(ExternalAuthID.objects.filter(user=hamlet).count(), 1)
         self.assertIn(
-            f"INFO:zulip.auth.ldap:User {hamlet.id}, logged in via ExternalAuthId uid=hamlet,ou=users,dc=zulip,dc=com, has mismatched email. Syncing: new-hamlet-email@zulip.com => New-Hamlet-email@zulip.com",
+            f"INFO:zulip.auth.ldap:User {hamlet.id}, being synced via ExternalAuthId uid=hamlet,ou=users,dc=zulip,dc=com, has mismatched email. Syncing: new-hamlet-email@zulip.com => New-Hamlet-email@zulip.com",
             mock_log.output,
         )
 
@@ -8541,6 +8674,225 @@ class TestZulipLDAPUserPopulator(ZulipLDAPTestCase):
                 "WARNING:django_auth_ldap:uid=hamlet,ou=users,dc=zulip,dc=com does not have a value for the attribute nonExistentAttr"
             ],
         )
+
+    def test_sync_creates_external_auth_id_record(self) -> None:
+        hamlet = self.example_user("hamlet")
+        realm = hamlet.realm
+        self.assertEqual(ExternalAuthID.objects.filter(user=hamlet).count(), 0)
+
+        with self.settings(
+            LDAP_EMAIL_ATTR="mail",
+            AUTH_LDAP_USER_ATTR_MAP={"full_name": "cn", "unique_account_id": "dn"},
+        ):
+            sync_user_from_ldap(hamlet, mock.Mock())
+
+        external_auth_ids = list(ExternalAuthID.objects.filter(user=hamlet))
+        self.assert_length(external_auth_ids, 1)
+        self.assertEqual(external_auth_ids[0].realm_id, realm.id)
+        self.assertEqual(external_auth_ids[0].external_auth_method_name, "ldap")
+        self.assertEqual(
+            external_auth_ids[0].external_auth_id, "uid=hamlet,ou=users,dc=zulip,dc=com"
+        )
+
+        ExternalAuthID.objects.filter(user=hamlet).delete()
+
+        # Now test a configuration with a different attribute as unique_account_id.
+        with self.settings(
+            LDAP_EMAIL_ATTR="mail",
+            AUTH_LDAP_USER_ATTR_MAP={"full_name": "cn", "unique_account_id": "homePhone"},
+        ):
+            sync_user_from_ldap(hamlet, mock.Mock())
+
+        external_auth_ids = list(ExternalAuthID.objects.filter(user=hamlet))
+        self.assert_length(external_auth_ids, 1)
+        self.assertEqual(external_auth_ids[0].external_auth_id, "123456789")
+
+        # If unique_account_id is not configured, no ExternalAuthID should be created.
+        ExternalAuthID.objects.filter(user=hamlet).delete()
+        self.perform_ldap_sync(hamlet)
+        self.assertEqual(ExternalAuthID.objects.filter(user=hamlet).count(), 0)
+
+    @override_settings(
+        LDAP_EMAIL_ATTR="mail",
+        AUTH_LDAP_USER_ATTR_MAP={"full_name": "cn", "unique_account_id": "dn"},
+    )
+    def test_sync_via_external_auth_id_end_to_end(self) -> None:
+        hamlet = self.example_user("hamlet")
+        realm = get_realm("zulip")
+
+        # Initial sync will happen via email, due to no pre-existing ExternalAuthID
+        # record.
+        self.assert_length(ExternalAuthID.objects.filter(user=hamlet), 0)
+        sync_user_from_ldap(hamlet, mock.Mock())
+        external_auth_ids = list(ExternalAuthID.objects.filter(user=hamlet))
+        self.assert_length(external_auth_ids, 1)
+        self.assertEqual(external_auth_ids[0].realm_id, realm.id)
+        self.assertEqual(external_auth_ids[0].external_auth_method_name, "ldap")
+        self.assertEqual(
+            external_auth_ids[0].external_auth_id, "uid=hamlet,ou=users,dc=zulip,dc=com"
+        )
+
+        # Next we test a sync that will just update the name, no email change happens yet.
+        self.change_ldap_user_attr("hamlet", "cn", "New Name")
+        sync_user_from_ldap(hamlet, mock.Mock())
+        hamlet.refresh_from_db()
+        self.assertEqual(hamlet.delivery_email, "hamlet@zulip.com")
+        self.assertEqual(hamlet.full_name, "New Name")
+        self.assert_length(ExternalAuthID.objects.filter(user=hamlet), 1)
+
+        # Now sync with an email change involved. Hamlet's delivery_email should get updated.
+        self.change_ldap_user_attr("hamlet", "mail", "new-hamlet@zulip.com")
+        self.change_ldap_user_attr("hamlet", "cn", "New Name2")
+
+        logger = logging.getLogger("zulip.sync_ldap_user_data")
+        with self.assertLogs(logger, level="INFO") as log_output:
+            sync_user_from_ldap(hamlet, logger)
+
+        hamlet.refresh_from_db()
+        self.assertEqual(hamlet.delivery_email, "new-hamlet@zulip.com")
+        self.assertEqual(hamlet.full_name, "New Name2")
+
+        # Verify the ExternalAuthID path was used and the email was synced.
+        self.assertIn(
+            f"INFO:zulip.sync_ldap_user_data:Syncing user new-hamlet@zulip.com (id={hamlet.id})"
+            " via external auth id. Result DN: uid=hamlet,ou=users,dc=zulip,dc=com",
+            log_output.output,
+        )
+        self.assertIn(
+            f"INFO:zulip.sync_ldap_user_data:User {hamlet.id},"
+            " being synced via ExternalAuthId uid=hamlet,ou=users,dc=zulip,dc=com,"
+            " has mismatched email. Syncing: hamlet@zulip.com => new-hamlet@zulip.com",
+            log_output.output,
+        )
+
+    @override_settings(
+        LDAP_EMAIL_ATTR="mail",
+        AUTH_LDAP_USER_ATTR_MAP={"full_name": "cn", "unique_account_id": "dn"},
+    )
+    def test_sync_via_external_auth_id_email_capitalization_change(self) -> None:
+        hamlet = self.example_user("hamlet")
+        ExternalAuthID.objects.create(
+            user=hamlet,
+            realm=hamlet.realm,
+            external_auth_method_name="ldap",
+            external_auth_id="uid=hamlet,ou=users,dc=zulip,dc=com",
+        )
+
+        self.change_ldap_user_attr("hamlet", "mail", "Hamlet@zulip.com")
+        mock_logger = mock.Mock()
+        sync_user_from_ldap(hamlet, mock_logger)
+
+        hamlet.refresh_from_db()
+        self.assertEqual(hamlet.delivery_email, "Hamlet@zulip.com")
+
+    @override_settings(
+        LDAP_EMAIL_ATTR="mail",
+        AUTH_LDAP_USER_ATTR_MAP={"full_name": "cn", "unique_account_id": "dn"},
+    )
+    def test_sync_via_external_auth_id_email_conflict(self) -> None:
+        hamlet = self.example_user("hamlet")
+        cordelia = self.example_user("cordelia")
+        ExternalAuthID.objects.create(
+            user=hamlet,
+            realm=hamlet.realm,
+            external_auth_method_name="ldap",
+            external_auth_id="uid=hamlet,ou=users,dc=zulip,dc=com",
+        )
+
+        # Change hamlet's LDAP email to cordelia's email to cause conflict
+        # when syncing attempts to update hamlet's delivery_email.
+        self.change_ldap_user_attr("hamlet", "mail", cordelia.delivery_email)
+        with self.assertRaises(PopulateUserLDAPError):
+            sync_user_from_ldap(hamlet, mock.Mock())
+
+        # hamlet's email should not have changed, and cordelia should be unaffected.
+        hamlet.refresh_from_db()
+        cordelia.refresh_from_db()
+        self.assertEqual(hamlet.delivery_email, "hamlet@zulip.com")
+        self.assertEqual(cordelia.full_name, "Cordelia, Lear's daughter")
+        self.assertEqual(cordelia.delivery_email, "cordelia@zulip.com")
+
+    @override_settings(
+        LDAP_EMAIL_ATTR="mail",
+        AUTH_LDAP_USER_ATTR_MAP={"full_name": "cn", "unique_account_id": "homePhone"},
+    )
+    def test_sync_external_auth_id_stale_value(self) -> None:
+        hamlet = self.example_user("hamlet")
+        # Create ExternalAuthID with a stale value that doesn't match LDAP.
+        ExternalAuthID.objects.create(
+            user=hamlet,
+            realm=hamlet.realm,
+            external_auth_method_name="ldap",
+            external_auth_id="old_value",
+        )
+
+        # The stale ExternalAuthID doesn't have a match in LDAP, so the sync
+        # falls back to email-based lookup and then resolves the ExternalAuthID
+        # issue.
+        with self.assertLogs("zulip.auth.ldap", level="WARNING") as log_output:
+            sync_user_from_ldap(hamlet, mock.Mock())
+
+        external_auth_id_obj = ExternalAuthID.objects.get(user=hamlet)
+        self.assertEqual(external_auth_id_obj.external_auth_id, "123456789")
+        self.assertIn(
+            f"WARNING:zulip.auth.ldap:User {hamlet.id} had mismatched ExternalAuthID record. "
+            "Updating old_value => 123456789",
+            log_output.output,
+        )
+
+    def test_sync_via_external_auth_id_deleted_ldap_user(self) -> None:
+        hamlet = self.example_user("hamlet")
+        hamlet_dn = "uid=hamlet,ou=users,dc=zulip,dc=com"
+        hamlet_ldap_entry = self.mock_ldap.directory[hamlet_dn]
+
+        # Test a DN-based lookup for a user whose record has been deleted from LDAP.
+        # Since the LDAP record can't be found, neither by ExternalAuthID nor email,
+        # no sync can happen beyond deactivating the user for having no matching
+        # LDAP record; if that configuration is enabled.
+        ExternalAuthID.objects.create(
+            user=hamlet,
+            realm=hamlet.realm,
+            external_auth_method_name="ldap",
+            external_auth_id=hamlet_dn,
+        )
+        del self.mock_ldap.directory[hamlet_dn]
+
+        with self.settings(
+            LDAP_EMAIL_ATTR="mail",
+            AUTH_LDAP_USER_ATTR_MAP={"full_name": "cn", "unique_account_id": "dn"},
+            LDAP_DEACTIVATE_NON_MATCHING_USERS=True,
+            AUTHENTICATION_BACKENDS=("zproject.backends.ZulipLDAPAuthBackend",),
+        ):
+            sync_user_from_ldap(hamlet, mock.Mock())
+
+        hamlet.refresh_from_db()
+        self.assertFalse(hamlet.is_active)
+
+        # Restore the initial state.
+        do_reactivate_user(hamlet, acting_user=None)
+        self.mock_ldap.directory[hamlet_dn] = hamlet_ldap_entry
+        ExternalAuthID.objects.filter(user=hamlet).delete()
+
+        # Now test the same scenario as above, but with a different attribute than DN
+        # configured as the unique_account_id.
+        ExternalAuthID.objects.create(
+            user=hamlet,
+            realm=hamlet.realm,
+            external_auth_method_name="ldap",
+            external_auth_id=hamlet_ldap_entry["homePhone"],
+        )
+        del self.mock_ldap.directory[hamlet_dn]
+
+        with self.settings(
+            LDAP_EMAIL_ATTR="mail",
+            AUTH_LDAP_USER_ATTR_MAP={"full_name": "cn", "unique_account_id": "homePhone"},
+            LDAP_DEACTIVATE_NON_MATCHING_USERS=True,
+            AUTHENTICATION_BACKENDS=("zproject.backends.ZulipLDAPAuthBackend",),
+        ):
+            sync_user_from_ldap(hamlet, mock.Mock())
+
+        hamlet.refresh_from_db()
+        self.assertFalse(hamlet.is_active)
 
 
 class TestQueryLDAP(ZulipLDAPTestCase):

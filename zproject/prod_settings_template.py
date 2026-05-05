@@ -228,6 +228,10 @@ AUTH_LDAP_USER_SEARCH = LDAPSearch(
     "ou=users,dc=example,dc=com", ldap.SCOPE_SUBTREE, "(uid=%(user)s)"
 )
 
+## AUTH_LDAP_USERNAME_ATTR should be the Zulip username attribute
+## (defined in AUTH_LDAP_USER_SEARCH).
+# AUTH_LDAP_USERNAME_ATTR = "uid"
+
 ## Configuration to look up a user's LDAP data given their email address
 ## (for Zulip reverse mapping).  If users log in as e.g. "sam" when
 ## their email address is "sam@example.com", set LDAP_APPEND_DOMAIN to
@@ -242,14 +246,10 @@ AUTH_LDAP_USER_SEARCH = LDAPSearch(
 # LDAP_EMAIL_ATTR = None
 
 ## AUTH_LDAP_REVERSE_EMAIL_SEARCH works like AUTH_LDAP_USER_SEARCH and
-## should query an LDAP user given their email address.  It and
-## AUTH_LDAP_USERNAME_ATTR are required when LDAP_APPEND_DOMAIN is None.
+## should query an LDAP user given their email address.  It is required
+## when LDAP_APPEND_DOMAIN is None.
 # AUTH_LDAP_REVERSE_EMAIL_SEARCH = LDAPSearch("ou=users,dc=example,dc=com",
 #                                             ldap.SCOPE_SUBTREE, "(email=%(email)s)")
-
-## AUTH_LDAP_USERNAME_ATTR should be the Zulip username attribute
-## (defined in AUTH_LDAP_USER_SEARCH).
-# AUTH_LDAP_USERNAME_ATTR = "uid"
 
 ## This map defines how to populate attributes of a Zulip user from LDAP.
 ##
@@ -579,7 +579,10 @@ SOCIAL_AUTH_SAML_SUPPORT_CONTACT = {
 # SOCIAL_AUTH_SYNC_ATTRS_DICT = {
 #     "example_org": {
 #         "saml": {
-#             # role is currently the only supported major attribute.
+#             # No extra_attrs are required to enable syncing names, which will use
+#             # the standard SAML name attributes.
+#             "full_name": True,
+#             # role is the other supported major attribute.
 #             "role": "zulip_role",
 #             # Specify custom profile fields with a custom__ prefix for the
 #             # Zulip field name.
